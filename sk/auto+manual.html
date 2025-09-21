@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Scroll-Driven Timeline</title>
+    <!-- Google Fonts: Poppins -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@700&display=swap" rel="stylesheet">
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Base styles */
+        body {
+            font-family: 'Poppins', sans-serif;
+            background-color: #030712; /* A slightly darker gray for depth */
+        }
+        
+        /* This container is fixed to the viewport, holding all visual elements */
+        #fixed-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            pointer-events: none; /* Allows scrolling events to pass through to the body */
+        }
+
+        /* Odometer styles */
+        .digit-container {
+            position: relative;
+            display: inline-flex;
+            width: 0.6em;
+            height: 1em;
+            overflow: hidden;
+            justify-content: center;
+        }
+
+        .digit-container span {
+            position: absolute;
+            text-align: center;
+            width: 100%;
+            transition: transform 0.5s cubic-bezier(0.65, 0, 0.35, 1);
+        }
+
+        /* Typing cursor effect */
+        @keyframes blink {
+            50% { background-color: transparent; }
+        }
+        .typing-cursor::after {
+            content: '';
+            display: inline-block;
+            width: 0.1em;
+            height: 0.8em;
+            background-color: #ef4444; /* red-500 */
+            margin-left: 0.1em;
+            animation: blink 0.8s step-end infinite;
+            vertical-align: bottom;
+        }
+        
+        @keyframes node-float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-6px); }
+        }
+        
+        .network-node {
+            position: absolute;
+            transform-origin: center center;
+            transition: transform 0.4s ease, filter 0.3s;
+            pointer-events: auto; /* Re-enable pointer events for nodes to be interactive */
+        }
+
+        .network-node:hover {
+            transform: translateY(-4px) scale(1.05);
+            filter: brightness(1.1);
+        }
+
+        .node-float {
+            animation: node-float 4s ease-in-out infinite;
+        }
+
+        /* Tooltip pointer */
+        #node-tooltip::after {
+            content: '';
+            position: absolute;
+            bottom: -5px;
+            left: 50%;
+            transform: translateX(-50%) rotate(45deg);
+            width: 10px;
+            height: 10px;
+            background-color: #1f2937; /* bg-gray-800 */
+            border-right: 1px solid #374151; /* border-gray-700 */
+            border-bottom: 1px solid #374151;
+        }
+
+        /* Progress dots styling */
+        .progress-dot {
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        .progress-dot:hover {
+            transform: scale(1.75) !important; /* Ensure hover effect is prioritized */
+            background-color: #f87171 !important; /* red-400 */
+        }
+    </style>
+</head>
+<body>
+    
+    <!-- This fixed container holds all the visual elements that stay on screen -->
+    <div id="fixed-container">
+        <!-- Background: gradient overlay + dot grid -->
+        <div class="absolute inset-0 bg-gradient-to-br from-gray-900 via-black to-gray-800"></div>
+        <div class="absolute inset-0 opacity-10" style="background-image: radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.1) 1px, transparent 0); background-size: 20px 20px;"></div>
+
+        <!-- Main Content Area -->
+        <div id="main-content" class="relative z-10 text-center w-full max-w-6xl mx-auto flex justify-center">
+            <div id="timeline-anchor" class="relative h-[500px] w-[700px] flex justify-center items-center">
+                <!-- Layer 1: SVG Connector Lines -->
+                <div id="network-lines-container" class="w-full h-full absolute top-0 left-0 z-0 transition-opacity duration-300"></div>
+                <!-- Layer 2: Odometer Year Display -->
+                <div id="odometer-year" class="text-9xl md:text-[10rem] font-bold flex items-center justify-center transition-colors duration-500 text-white absolute z-10 bg-black/40 rounded-lg backdrop-blur-sm px-4 py-2">
+                    <span class="static-digits">20</span>
+                    <div id="decade-container" class="digit-container"><span>0</span></div>
+                    <div id="unit-container" class="digit-container"><span>4</span></div>
+                </div>
+                <!-- Layer 3: Nodes, Text, and other content -->
+                <div id="content-container" class="w-full h-full absolute top-0 left-0 z-20 transition-opacity duration-300"></div>
+                <!-- Layer 4: Tooltip for nodes -->
+                <div id="node-tooltip" class="absolute w-64 bg-gray-800 border border-gray-700/50 rounded-lg p-3 shadow-xl text-left hidden opacity-0 transition-opacity duration-300 z-30"></div>
+            </div>
+        </div>
+        
+        <!-- UI Elements that need to be clickable -->
+        <div id="progress-dots" class="fixed bottom-8 left-1/2 transform -translate-x-1/2 flex items-center space-x-3 z-20 pointer-events-auto"></div>
+        <div class="fixed bottom-8 right-8 z-20 pointer-events-auto">
+             <button id="restart-button" class="bg-red-500 hover:bg-red-600 text-white px-6 py-2 rounded-full font-medium transition-all duration-300 hover:scale-105 active:scale-95 shadow-lg hover:shadow-xl">↻ Restart</button>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // --- DATA (with updated text) ---
+            const timelineEvents = [
+                 { year: 2004, type: "network", mainText: "The Genesis: My Story Begins", nodes: [
+                    { id: 1, title: "Born", description: "Born in the vibrant town of Koraput, Odisha.", color: "#EF4444", icon: "👶" },
+                    { id: 2, title: "Hometown", description: "Koraput, a place of serene hills and valleys, was my first home.", color: "#10B981", icon: "🏞️" },
+                    { id: 3, title: "Family", description: "My journey started with the love and support of my family.", color: "#3B82F6", icon: "👨‍👩‍👧" },
+                ]},
+                { year: 2008, text: "My learning journey began at Kendriya Vidyalaya No. 4   ", type: "simple"},
+                { year: 2011, text: "Built strong foundations through middle schooling   ", type: "simple"},
+                { year: 2020, text: "Designed & launched my first Personal Portfolio Website   ", type: "simple"},
+                { year: 2021, text: "Completed Class X (CBSE) with 87.4%", type: "simple   "},
+                { year: 2023, text: "Completed Class XII with 70.6% & Built a Shoe Billing System (Python + MySQL)"   , type: "simple"},
+                { year: 2024, type: "network", mainText: "A Year of Exponential Growth", nodes: [
+                    { id: 1, title: "B.Tech Started", description: "Began B.Tech in Computer Science at Trident Academy of Technology.", color: "#3B82F6", icon: "🎓" },
+                    { id: 2, title: "Web Developer", description: "Worked as a Developer for Purvaansh Preschool & ACM Student Chapter.", color: "#10B981", icon: "💻" },
+                    { id: 3, title: "Hackathon Club", description: "Joined the Hackathon Club and contributed to innovation projects.", color: "#8B5CF6", icon: "🚀" },
+                    { id: 4, title: "SIH Finalist", description: "Became a Smart India Hackathon Finalist, showcasing innovative solutions.", color: "#F59E0B", icon: "🏆" },
+                    { id: 5, title: "IEEE Hackathon", description: "Active participant in IEEE Hackathon competitions.", color: "#EF4444", icon: "⚡" },
+                    { id: 6, title: "Trithon Hackathon", description: "Developed a Carbon Offset App at the Trithon Hackathon.", color: "#06B6D4", icon: "🌱" }
+                ]},
+                { year: 2027, text: "Will graduate as a Computer Science Engineer.", isExpected: true, type: "simple" },
+            ];
+
+            // --- DOM ELEMENTS ---
+            const odometerYearEl = document.getElementById('odometer-year');
+            const decadeContainer = document.getElementById('decade-container');
+            const unitContainer = document.getElementById('unit-container');
+            const contentContainer = document.getElementById('content-container');
+            const networkLinesContainer = document.getElementById('network-lines-container');
+            const progressDotsContainer = document.getElementById('progress-dots');
+            const restartButton = document.getElementById('restart-button');
+            const nodeTooltip = document.getElementById('node-tooltip');
+            const timelineAnchor = document.getElementById('timeline-anchor');
+
+            // --- STATE & CONFIG ---
+            let currentEventIndex = 0;
+            let currentDisplayYear = 0;
+            let isAnimating = false; // Prevents overlapping animations
+            let sectionMarkers = [];
+            let scrollTimeout;
+            let animationSessionId;
+
+            // --- CORE SCROLL LOGIC ---
+
+            /**
+             * Easing function to make scroll animations feel more natural.
+             */
+            function easeInOutCubic(t) {
+                return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+            }
+
+            /**
+             * Calculates the scroll positions for each event to enable snapping.
+             */
+            function calculateScrollMarkers() {
+                sectionMarkers = [];
+                // A virtual height for each section to scroll through
+                const sectionHeight = window.innerHeight * 1.5; 
+                timelineEvents.forEach((_, index) => {
+                    sectionMarkers.push({ start: index * sectionHeight });
+                });
+                document.body.style.height = `${sectionHeight * (timelineEvents.length - 1) + window.innerHeight}px`;
+            }
+
+            /**
+             * Handles the user's scroll input (wheel) to trigger navigation.
+             * This function acts as the main trigger. It listens for a single mouse wheel action.
+             * It prevents the default browser scroll and instead calculates the next event to navigate to.
+             */
+            function handleScrollTrigger(event) {
+                event.preventDefault(); // Prevent default scroll behavior
+                if (isAnimating) return;
+
+                const direction = event.deltaY > 0 ? 1 : -1;
+                const targetIndex = currentEventIndex + direction;
+
+                if (targetIndex >= 0 && targetIndex < timelineEvents.length) {
+                    navigateToEvent(targetIndex);
+                }
+            }
+
+            /**
+             * Main navigation function: smoothly scrolls the page and then plays animations.
+             * This is the master function for navigating between events.
+             * 1. It blocks further scrolls by setting `isAnimating = true`.
+             * 2. It smoothly scrolls the PAGE to the correct section for the target event.
+             * 3. AFTER the page scroll is complete, it calls `animateEventContent` to play the animations for that event.
+             * 4. Once all animations are done, it sets `isAnimating = false`, allowing the user to scroll again.
+             * This creates the "scroll-to-trigger, then auto-play-to-end-of-event" behavior.
+             */
+            async function navigateToEvent(index) {
+                if (isAnimating || index === currentEventIndex) return;
+
+                isAnimating = true;
+                const targetScrollY = sectionMarkers[index].start;
+
+                await smoothPageScroll(targetScrollY, 800);
+                await animateEventContent(index);
+                
+                isAnimating = false;
+            }
+
+            /**
+             * Custom animation loop to smoothly scroll the entire page.
+             */
+            function smoothPageScroll(targetY, duration) {
+                 return new Promise(resolve => {
+                    const startY = window.scrollY;
+                    const distance = targetY - startY;
+                    let startTime = null;
+
+                    function animationStep(timestamp) {
+                        if (!startTime) startTime = timestamp;
+                        const progress = Math.min((timestamp - startTime) / duration, 1);
+                        const easedProgress = easeInOutCubic(progress);
+                        window.scrollTo(0, startY + distance * easedProgress);
+                        if (progress < 1) {
+                            requestAnimationFrame(animationStep);
+                        } else {
+                            resolve();
+                        }
+                    }
+                    requestAnimationFrame(animationStep);
+                });
+            }
+
+            /**
+             * Handles all visual animations for a specific event (year change, content, etc.).
+             */
+            async function animateEventContent(targetIndex) {
+                const sessionId = Date.now();
+                animationSessionId = sessionId;
+
+                hideTooltip();
+
+                let fadeOutPromise = Promise.resolve();
+                if (contentContainer.firstElementChild) {
+                    contentContainer.firstElementChild.style.opacity = 0;
+                    fadeOutPromise = new Promise(res => setTimeout(res, 300));
+                }
+
+                const nextEvent = timelineEvents[targetIndex];
+                const startYear = currentDisplayYear || timelineEvents[0].year;
+                const endYear = nextEvent.year;
+
+                const scrollPromise = animateYearScroll(startYear, endYear, sessionId);
+
+                await Promise.all([fadeOutPromise, scrollPromise]);
+
+                if (animationSessionId !== sessionId) return;
+
+                contentContainer.innerHTML = '';
+                networkLinesContainer.innerHTML = '';
+                currentEventIndex = targetIndex;
+                updateUI(targetIndex);
+
+                // This promise will resolve when the content animation (typing, etc.) is complete.
+                return new Promise(resolve => {
+                    const event = timelineEvents[targetIndex];
+                    if (event.type === 'network') {
+                        renderNetworkView(event, resolve); // Pass resolve as the onComplete callback
+                    } else {
+                        renderTypingText(event.text, resolve); // Pass resolve as the onComplete callback
+                    }
+                });
+            }
+
+            // --- RENDER & ANIMATION FUNCTIONS (Modified for auto-play) ---
+            
+            function animateDigit(container, newDigit) {
+                const currentSpans = Array.from(container.querySelectorAll('span'));
+                const lastDigit = currentSpans.length > 0 ? currentSpans[currentSpans.length - 1].textContent : null;
+                if (lastDigit === newDigit) return;
+                
+                const newSpan = document.createElement('span');
+                newSpan.textContent = newDigit;
+                newSpan.style.transform = 'translateY(100%)';
+                container.appendChild(newSpan);
+                
+                requestAnimationFrame(() => {
+                    newSpan.style.transform = 'translateY(0%)';
+                    currentSpans.forEach(span => {
+                        span.style.transform = 'translateY(-100%)';
+                        setTimeout(() => span.remove(), 500);
+                    });
+                });
+            }
+
+            function animateYearScroll(startYear, endYear, sessionId) {
+                 return new Promise(resolve => {
+                    if (startYear === endYear) { resolve(); return; }
+                    
+                    const totalYears = endYear - startYear;
+                    const duration = Math.max(800, Math.min(2000, Math.abs(totalYears) * 90));
+                    let startTime = null;
+                    
+                    const animationStep = (timestamp) => {
+                        if (animationSessionId !== sessionId) { resolve(); return; }
+                        if (!startTime) startTime = timestamp;
+                        
+                        const progress = Math.min((timestamp - startTime) / duration, 1);
+                        const easedProgress = easeInOutCubic(progress);
+                        const frameYear = Math.floor(startYear + totalYears * easedProgress);
+                        
+                        if (frameYear !== currentDisplayYear) {
+                            setOdometer(frameYear, frameYear === endYear);
+                        }
+                        
+                        if (progress < 1) {
+                            requestAnimationFrame(animationStep);
+                        } else {
+                            setOdometer(endYear, true); 
+                            resolve();
+                        }
+                    };
+                    requestAnimationFrame(animationStep);
+                });
+            }
+
+            function setOdometer(year, isEventYear) {
+                const yearStr = year.toString();
+                odometerYearEl.classList.toggle('text-white', isEventYear);
+                odometerYearEl.classList.toggle('text-gray-500', !isEventYear);
+                
+                if (year !== currentDisplayYear) {
+                    animateDigit(decadeContainer, yearStr[2]);
+                    animateDigit(unitContainer, yearStr[3]);
+                    currentDisplayYear = year;
+                }
+            }
+            
+            function typeTextEffect(wrapper, text, className, onComplete) {
+                let i = 0;
+                const p = document.createElement('p');
+                p.className = `${className} typing-cursor`;
+                wrapper.innerHTML = '';
+                wrapper.appendChild(p);
+                setTimeout(() => wrapper.classList.remove('opacity-0'), 100);
+
+                function typeChar() {
+                    if (i < text.length) {
+                        p.textContent += text.charAt(i);
+                        i++;
+                        setTimeout(typeChar, 40);
+                    } else {
+                        p.classList.remove('typing-cursor');
+                        setTimeout(onComplete, 1500); // Pause before resolving
+                    }
+                }
+                setTimeout(typeChar, 300);
+            }
+
+            function renderTypingText(text, onComplete) {
+                contentContainer.innerHTML = `<div class="text-container absolute top-1/2 left-1/2 -translate-x-1/2 translate-y-32 w-full max-w-2xl px-4 opacity-0 transition-opacity duration-500"></div>`;
+                const wrapper = contentContainer.firstElementChild;
+                const className = "text-red-500 text-xl md:text-2xl font-semibold";
+                typeTextEffect(wrapper, text, className, onComplete);
+            }
+
+            function getNodePositions(count) {
+                 return {
+                    3: [{ top: '20%', left: '7%' }, { top: '45%', left: '95%' }, { top: '11%', left: '69%' }],
+                    6: [{ top: '35%', left: '0%' }, { top: '17%', left: '90%' }, { top: '6%', left: '10%' }, { top: '96%', left: '79%' }, { top: '85%', left: '10%' }, { top: '5%', left: '50%' }]
+                }[count] || [];
+            }
+
+            function renderNetworkView(event, onComplete) {
+                const className = "text-red-400 text-xl md:text-2xl font-semibold";
+                contentContainer.innerHTML = `<div class="text-container absolute top-1/2 left-1/2 -translate-x-1/2 translate-y-32 w-full max-w-2xl px-4 opacity-0 transition-opacity duration-500"></div>`;
+                networkLinesContainer.innerHTML = `<svg id="connector-svg" class="absolute inset-0 w-full h-full"><defs></defs></svg>`;
+                
+                const titleContainer = contentContainer.firstElementChild;
+                const nodePositions = getNodePositions(event.nodes.length);
+                
+                event.nodes.forEach((node) => {
+                    const nodeEl = document.createElement('div');
+                    nodeEl.id = `node-${node.id}`;
+                    // Position and style the node...
+                    const pos = nodePositions[event.nodes.indexOf(node)];
+                    nodeEl.className = "network-node node-float flex flex-col items-center text-center cursor-pointer pointer-events-auto w-24 opacity-0";
+                    let transformStyle = 'translate(-50%, -50%)';
+                    if (pos.left === '0%') transformStyle = 'translate(0, -50%)';
+                    else if (pos.left === '100%') transformStyle = 'translate(-100%, -50%)';
+                    nodeEl.style.cssText = `left: ${pos.left}; top: ${pos.top}; transform: ${transformStyle};`;
+                    nodeEl.innerHTML = `<div class="icon-wrapper w-12 h-12 rounded-full flex items-center justify-center text-white text-3xl shadow-lg mb-2" style="background-color: ${node.color};">${node.icon}</div><span class="text-sm font-medium text-gray-300">${node.title}</span>`;
+                    contentContainer.appendChild(nodeEl);
+                    nodeEl.addEventListener('mouseenter', (e) => showTooltip(e, node));
+                    nodeEl.addEventListener('mouseleave', hideTooltip);
+                });
+
+                typeTextEffect(titleContainer, event.mainText, className, () => {
+                    const lineAnimationPromises = redrawNetworkLines(event, true);
+                    Promise.all(lineAnimationPromises).then(() => {
+                        setTimeout(onComplete, 2000); // Final pause after lines are drawn
+                    });
+                });
+            }
+
+            function generateCustomPath2004(start, end, nodeIndex) {
+                 if (nodeIndex === 0 || nodeIndex === 1) return `M ${start.x} ${start.y} H ${end.x} V ${end.y}`;
+                 if (nodeIndex === 2) return `M ${start.x} ${start.y} V ${end.y} H ${end.x}`;
+                 return `M ${start.x} ${start.y} L ${end.x} ${end.y}`;
+            }
+
+            function generateCustomPath2024(start, end) {
+                // For a cleaner look with 6 nodes, a simple Horizontal-then-Vertical path works well.
+                // The varied start points will ensure the lines don't overlap unattractively.
+                return `M ${start.x} ${start.y} H ${end.x} V ${end.y}`;
+            }
+
+            function redrawNetworkLines(event, isAnimated = false) {
+                const animationPromises = [];
+                const svgEl = document.getElementById('connector-svg');
+                if (!svgEl) return animationPromises;
+
+                svgEl.innerHTML = '<defs></defs>';
+                const anchorBox = timelineAnchor.getBoundingClientRect();
+                const yearBox = odometerYearEl.getBoundingClientRect();
+                
+                let startPoints;
+                 if (event.year === 2004) {
+                     startPoints = [
+                        { x: yearBox.left - anchorBox.left, y: yearBox.top - anchorBox.top + yearBox.height/2 },
+                        { x: yearBox.right - anchorBox.left, y: yearBox.top - anchorBox.top + yearBox.height/2 },
+                        { x: yearBox.left - anchorBox.left + yearBox.width/2, y: yearBox.top - anchorBox.top },
+                    ];
+                } else {
+                     // Expanded start points to handle up to 6 nodes cleanly for the 2024 event.
+                     startPoints = [
+                        { x: yearBox.left - anchorBox.left, y: yearBox.top - anchorBox.top + yearBox.height * 0.33 }, // Left-Top
+                        { x: yearBox.right - anchorBox.left, y: yearBox.top - anchorBox.top + yearBox.height * 0.33 }, // Right-Top
+                        { x: yearBox.left - anchorBox.left + yearBox.width/2, y: yearBox.top - anchorBox.top }, // Top-Middle
+                        { x: yearBox.right - anchorBox.left, y: yearBox.bottom - anchorBox.top - yearBox.height * 0.33 }, // Right-Bottom
+                        { x: yearBox.left - anchorBox.left, y: yearBox.bottom - anchorBox.top - yearBox.height * 0.33 }, // Left-Bottom
+                        { x: yearBox.left - anchorBox.left + yearBox.width/2, y: yearBox.bottom - anchorBox.top }, // Bottom-Middle
+                    ];
+                }
+                
+                event.nodes.forEach((node, index) => {
+                    const nodeEl = document.getElementById(`node-${node.id}`);
+                    if (!nodeEl) return;
+                    const iconEl = nodeEl.querySelector('.icon-wrapper');
+                    const iconRect = iconEl.getBoundingClientRect();
+                    const end = { x: iconRect.left + iconRect.width/2 - anchorBox.left, y: iconRect.top + iconRect.height/2 - anchorBox.top };
+                    const start = startPoints[index % startPoints.length];
+                    
+                    // Added specific logic to call the new path generator for the 2024 event.
+                    let pathData;
+                    if (event.year === 2004) {
+                        pathData = generateCustomPath2004(start, end, index);
+                    } else if (event.year === 2024) {
+                        pathData = generateCustomPath2024(start, end);
+                    } else {
+                        pathData = `M ${start.x} ${start.y} H ${end.x} V ${end.y}`;
+                    }
+
+                    const delay = isAnimated ? index * 150 : 0;
+                    const promise = createLine(svgEl, pathData, node.color, delay, node.id, isAnimated, end);
+                    animationPromises.push(promise);
+                });
+                return animationPromises;
+            }
+
+            function createLine(svg, pathData, strokeColor, delay, nodeId, isAnimated, endCoords) {
+                return new Promise(resolve => {
+                    const animationDuration = 1200; // Faster line draw
+                    const defs = svg.querySelector('defs');
+                    const visiblePath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                    visiblePath.setAttribute('d', pathData);
+                    visiblePath.setAttribute('stroke', strokeColor);
+                    visiblePath.setAttribute('stroke-width', '2');
+                    visiblePath.setAttribute('fill', 'none');
+                    visiblePath.setAttribute('stroke-linecap', 'round');
+                    visiblePath.setAttribute('stroke-dasharray', '8 4');
+                    
+                    if (isAnimated) {
+                        const uniqueId = `mask-${nodeId}-${Math.random().toString(36).substr(2, 9)}`;
+                        const mask = document.createElementNS("http://www.w3.org/2000/svg", "mask");
+                        mask.id = uniqueId;
+                        const maskPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                        maskPath.setAttribute('d', pathData);
+                        maskPath.setAttribute('fill', 'none');
+                        maskPath.setAttribute('stroke', 'white');
+                        maskPath.setAttribute('stroke-width', '5');
+                        maskPath.setAttribute('stroke-linecap', 'round');
+                        const length = maskPath.getTotalLength();
+                        maskPath.style.strokeDasharray = length;
+                        maskPath.style.strokeDashoffset = length;
+                        
+                        mask.appendChild(maskPath);
+                        defs.appendChild(mask);
+                        visiblePath.setAttribute('mask', `url(#${uniqueId})`);
+
+                        setTimeout(() => {
+                            maskPath.style.transition = `stroke-dashoffset ${animationDuration / 1000}s cubic-bezier(0.6, 0, 0.4, 1)`;
+                            maskPath.style.strokeDashoffset = 0;
+                            document.getElementById(`node-${nodeId}`)?.classList.remove('opacity-0');
+                            setTimeout(resolve, animationDuration); // Resolve promise when line is done
+                        }, delay);
+                    } else {
+                        resolve();
+                    }
+                     svg.appendChild(visiblePath);
+                });
+            }
+
+            // --- UI & UTILITY FUNCTIONS ---
+            
+            function updateUI(index) {
+                renderProgressDots();
+                const isLastEvent = index >= timelineEvents.length - 1;
+                restartButton.style.display = isLastEvent ? 'inline-block' : 'none';
+            }
+
+            function renderProgressDots() {
+                progressDotsContainer.innerHTML = timelineEvents.map((_, index) => 
+                    `<div class="progress-dot w-2 h-2 rounded-full" data-index="${index}" style="background-color: ${index === currentEventIndex ? '#ef4444' : (index < currentEventIndex ? '#f87171' : '#6b7280')}; transform: ${index === currentEventIndex ? 'scale(1.5)' : 'scale(1)'};"></div>`
+                ).join('');
+                document.querySelectorAll('.progress-dot').forEach(dot => {
+                    dot.addEventListener('click', () => {
+                        const targetIndex = parseInt(dot.dataset.index);
+                        navigateToEvent(targetIndex);
+                    });
+                });
+            }
+
+             function showTooltip(e, node) {
+                 const rect = e.currentTarget.getBoundingClientRect();
+                 const anchorRect = timelineAnchor.getBoundingClientRect();
+                 nodeTooltip.innerHTML = `<div class="flex items-center mb-2"><div class="w-8 h-8 rounded-full flex items-center justify-center text-white text-xl mr-2" style="background-color: ${node.color};">${node.icon}</div><h3 class="font-semibold text-white">${node.title}</h3></div><p class="text-gray-300 text-sm leading-relaxed">${node.description}</p>`;
+                 const leftPos = rect.left - anchorRect.left + (rect.width / 2);
+                 const topPos = rect.top - anchorRect.top;
+                 nodeTooltip.style.left = `${leftPos}px`;
+                 nodeTooltip.style.top = `${topPos}px`;
+                 nodeTooltip.style.transform = 'translate(-50%, calc(-100% - 12px))';
+                 nodeTooltip.classList.remove('hidden');
+                 setTimeout(() => nodeTooltip.classList.remove('opacity-0'), 10);
+            }
+
+            function hideTooltip() {
+                nodeTooltip.classList.add('opacity-0');
+                setTimeout(() => { if (nodeTooltip.classList.contains('opacity-0')) nodeTooltip.classList.add('hidden'); }, 300);
+            }
+
+            // --- INITIALIZATION ---
+            function init() {
+                calculateScrollMarkers();
+                // We use a timeout to prevent the scroll handler from firing too rapidly
+                window.addEventListener('wheel', (event) => {
+                    clearTimeout(scrollTimeout);
+                    scrollTimeout = setTimeout(() => handleScrollTrigger(event), 50);
+                }, { passive: false });
+
+                window.addEventListener('resize', () => {
+                    calculateScrollMarkers();
+                    const targetScrollY = sectionMarkers[currentEventIndex].start;
+                    window.scrollTo(0, targetScrollY); // Snap to correct position on resize
+                });
+                
+                restartButton.addEventListener('click', () => navigateToEvent(0));
+                
+                // Initial load
+                animateEventContent(0).then(() => isAnimating = false);
+            }
+
+            init();
+        });
+    </script>
+    
+    <script>
+        // Disable right-click and developer tools
+        document.addEventListener("contextmenu", e => e.preventDefault());
+        document.onkeydown = function(e) {
+            if (e.keyCode == 123 || (e.ctrlKey && e.shiftKey && ['I','J','C'].includes(e.key.toUpperCase())) ) {
+                return false;
+            }
+        }
+        
+        // Disable text selection and copying
+        document.addEventListener('selectstart', e => e.preventDefault());
+        document.addEventListener('dragstart', e => e.preventDefault());
+        
+        // Disable copy, cut, paste, select all
+        document.addEventListener('keydown', function(e) {
+            // Disable Ctrl+A (Select All)
+            if (e.ctrlKey && e.keyCode === 65) {
+                e.preventDefault();
+                return false;
+            }
+            // Disable Ctrl+C (Copy)
+            if (e.ctrlKey && e.keyCode === 67) {
+                e.preventDefault();
+                return false;
+            }
+            // Disable Ctrl+X (Cut)
+            if (e.ctrlKey && e.keyCode === 88) {
+                e.preventDefault();
+                return false;
+            }
+            // Disable Ctrl+V (Paste)
+            if (e.ctrlKey && e.keyCode === 86) {
+                e.preventDefault();
+                return false;
+            }
+            // Disable Ctrl+S (Save)
+            if (e.ctrlKey && e.keyCode === 83) {
+                e.preventDefault();
+                return false;
+            }
+            // Disable Ctrl+P (Print)
+            if (e.ctrlKey && e.keyCode === 80) {
+                e.preventDefault();
+                return false;
+            }
+        });
+        
+        // Disable text selection via CSS
+        document.addEventListener('DOMContentLoaded', function() {
+            const style = document.createElement('style');
+            style.textContent = `
+                * {
+                    -webkit-user-select: none !important;
+                    -moz-user-select: none !important;
+                    -ms-user-select: none !important;
+                    user-select: none !important;
+                    -webkit-touch-callout: none !important;
+                    -webkit-tap-highlight-color: transparent !important;
+                }
+            `;
+            document.head.appendChild(style);
+        });
+    </script>
+</body>
+</html>
+
+
